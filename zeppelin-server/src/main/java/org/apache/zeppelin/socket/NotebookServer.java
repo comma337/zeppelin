@@ -191,6 +191,29 @@ public class NotebookServer extends WebSocketServlet
         throw new Exception("Anonymous access not allowed ");
       }
 
+      // NOTE : zeppelin-site.xml의 zeppelin.notebook.default.owner.username 값에 해당하는 경우만 노트 생성 권한 부여
+      List<OP> operations = new ArrayList<>();
+      operations.add(OP.NEW_NOTE);
+      operations.add(OP.DEL_NOTE);
+      operations.add(OP.REMOVE_FOLDER);
+      operations.add(OP.MOVE_NOTE_TO_TRASH);
+      operations.add(OP.MOVE_FOLDER_TO_TRASH);
+      operations.add(OP.EMPTY_TRASH);
+      operations.add(OP.CLONE_NOTE);
+      operations.add(OP.NOTE_RENAME);
+      operations.add(OP.FOLDER_RENAME);
+      operations.add(OP.MOVE_PARAGRAPH);
+      operations.add(OP.INSERT_PARAGRAPH);
+      operations.add(OP.COPY_PARAGRAPH);
+      operations.add(OP.PARAGRAPH_REMOVE);
+
+      String adminRole = conf.getString(ConfVars.ZEPPELIN_OWNER_ROLE);
+      if (operations.contains(messagereceived.op) &&
+              StringUtils.isNotBlank(adminRole) &&
+              !adminRole.equals(messagereceived.principal)) {
+        throw new Exception("Only " + adminRole + " can create notebooks ");
+      }
+
       HashSet<String> userAndRoles = new HashSet<>();
       userAndRoles.add(messagereceived.principal);
       if (!messagereceived.roles.equals("")) {
@@ -364,13 +387,20 @@ public class NotebookServer extends WebSocketServlet
       }
     } catch (Exception e) {
       LOG.error("Can't handle message: " + msg, e);
+
+      try {
+        conn.send(serializeMessage(new Message(OP.ERROR_INFO).put("info",
+                e.getMessage())));
+      } catch (IOException | WebSocketException we) {
+        LOG.error("socket error", e);
+      }
     }
   }
 
   @Override
   public void onClose(NotebookSocket conn, int code, String reason) {
     LOG.info("Closed connection to {} : {}. ({}) {}", conn.getRequest().getRemoteAddr(),
-        conn.getRequest().getRemotePort(), code, reason);
+            conn.getRequest().getRemotePort(), code, reason);
     removeConnectionFromAllNote(conn);
     connectedSockets.remove(conn);
     removeUserConnection(conn.getUser(), conn);
@@ -1019,7 +1049,7 @@ public class NotebookServer extends WebSocketServlet
   private boolean isCronUpdated(Map<String, Object> configA, Map<String, Object> configB) {
     boolean cronUpdated = false;
     if (configA.get("cron") != null && configB.get("cron") != null && configA.get("cron")
-        .equals(configB.get("cron"))) {
+            .equals(configB.get("cron"))) {
       cronUpdated = true;
     } else if (configA.get("cron") == null && configB.get("cron") == null) {
       cronUpdated = false;
@@ -1173,7 +1203,7 @@ public class NotebookServer extends WebSocketServlet
   }
 
   private void restoreNote(NotebookSocket conn, HashSet<String> userAndRoles,
-                          Notebook notebook, Message fromMessage)
+      Notebook notebook, Message fromMessage)
       throws SchedulerException, IOException {
     String noteId = (String) fromMessage.get("id");
 
@@ -1701,7 +1731,7 @@ public class NotebookServer extends WebSocketServlet
     String noteId = getOpenNoteId(conn);
 
     if (!hasParagraphRunnerPermission(conn, notebook, noteId,
-        userAndRoles, fromMessage.principal, "write")) {
+        userAndRoles, fromMessage.principal, "run paragraph")) {
       return;
     }
 
@@ -1742,7 +1772,8 @@ public class NotebookServer extends WebSocketServlet
       Paragraph p = setParagraphUsingMessage(note, fromMessage,
           paragraphId, text, title, params, config);
 
-      if (p.isEnabled() && !persistAndExecuteSingleParagraph(conn, note, p, true)) {
+      if (p.isEnabled() &&
+            !persistAndExecuteSingleParagraph(conn, notebook, note, p, userAndRoles, true)) {
         // stop execution when one paragraph fails.
         break;
       }
@@ -1795,7 +1826,7 @@ public class NotebookServer extends WebSocketServlet
       LOG.error("Failed parse dateFinished", e);
     }
 
-    addNewParagraphIfLastParagraphIsExecuted(note, p);
+    addNewParagraphIfLastParagraphIsExecuted(notebook, note, p, userAndRoles);
     if (!persistNoteWithAuthInfo(conn, note, p)) {
       return;
     }
@@ -1815,7 +1846,7 @@ public class NotebookServer extends WebSocketServlet
     String noteId = getOpenNoteId(conn);
 
     if (!hasParagraphRunnerPermission(conn, notebook, noteId,
-        userAndRoles, fromMessage.principal, "write")) {
+        userAndRoles, fromMessage.principal, "run paragraph")) {
       return;
     }
 
@@ -1835,17 +1866,20 @@ public class NotebookServer extends WebSocketServlet
     Map<String, Object> config = (Map<String, Object>) fromMessage.get("config");
 
     Paragraph p = setParagraphUsingMessage(note, fromMessage, paragraphId,
-        text, title, params, config);
+      text, title, params, config);
 
-    persistAndExecuteSingleParagraph(conn, note, p, false);
+    persistAndExecuteSingleParagraph(conn, notebook, note, p,
+            userAndRoles, false);
   }
 
-  private void addNewParagraphIfLastParagraphIsExecuted(Note note, Paragraph p) {
-    // if it's the last paragraph and not empty, let's add a new one
+  private void addNewParagraphIfLastParagraphIsExecuted(Notebook notebook, Note note, Paragraph p,
+                                                        HashSet<String> userAndRoles) {
+    NotebookAuthorization notebookAuthorization = notebook.getNotebookAuthorization();
     boolean isTheLastParagraph = note.isLastParagraph(p.getId());
     if (!(Strings.isNullOrEmpty(p.getText()) ||
-        Strings.isNullOrEmpty(p.getScriptText())) &&
-        isTheLastParagraph) {
+            Strings.isNullOrEmpty(p.getScriptText())) &&
+            isTheLastParagraph &&
+            notebookAuthorization.isWriter(note.getId(), userAndRoles)) {
       Paragraph newPara = note.addNewParagraph(p.getAuthenticationInfo());
       broadcastNewParagraph(note, newPara);
     }
@@ -1870,9 +1904,12 @@ public class NotebookServer extends WebSocketServlet
   }
 
   private boolean persistAndExecuteSingleParagraph(NotebookSocket conn,
-                                                Note note, Paragraph p,
-                                                boolean blocking) throws IOException {
-    addNewParagraphIfLastParagraphIsExecuted(note, p);
+                                                   Notebook notebook,
+                                                   Note note,
+                                                   Paragraph p,
+                                                   HashSet<String> userAndRoles,
+                                                   boolean blocking) throws IOException {
+    addNewParagraphIfLastParagraphIsExecuted(notebook, note, p, userAndRoles);
     if (!persistNoteWithAuthInfo(conn, note, p)) {
       return false;
     }
