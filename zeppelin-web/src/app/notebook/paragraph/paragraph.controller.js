@@ -247,11 +247,10 @@ function ParagraphCtrl($scope, $rootScope, $route, $window, $routeParams, $locat
       console.log('editor isnt loaded yet, returning');
       return;
     }
-    if ($scope.revisionView === true) {
-      $scope.editor.setReadOnly(true);
-    } else {
-      $scope.editor.setReadOnly(false);
-    }
+
+    $scope.callGetPermissions(function() {
+      $scope.editor.setReadOnly($scope.revisionView || !$scope.isOwner);
+    });
   });
 
   let isEmpty = function(object) {
@@ -720,7 +719,11 @@ function ParagraphCtrl($scope, $rootScope, $route, $window, $routeParams, $locat
       $scope.editor.setHighlightActiveLine(false);
       $scope.editor.getSession().setUseWrapMode(true);
       $scope.editor.setTheme('ace/theme/chrome');
-      $scope.editor.setReadOnly($scope.isRunning($scope.paragraph));
+
+      $scope.callGetPermissions(function() {
+        $scope.editor.setReadOnly($scope.isRunning($scope.paragraph) || !$scope.isOwner);
+      });
+
       $scope.editor.setHighlightActiveLine($scope.paragraphFocused);
 
       if ($scope.paragraphFocused) {
@@ -1469,7 +1472,9 @@ function ParagraphCtrl($scope, $rootScope, $route, $window, $routeParams, $locat
     $scope.paragraph.settings = newPara.settings;
     $scope.paragraph.runtimeInfos = newPara.runtimeInfos;
     if ($scope.editor) {
-      $scope.editor.setReadOnly($scope.isRunning(newPara));
+      $scope.callGetPermissions(function() {
+        $scope.editor.setReadOnly($scope.isRunning(newPara) || !$scope.isOwner);
+      });
     }
 
     if (!$scope.asIframe) {

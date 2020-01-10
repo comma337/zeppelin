@@ -782,6 +782,14 @@ function NotebookCtrl($scope, $route, $routeParams, $location, $rootScope,
     });
   };
 
+  $scope.callGetPermissions = function(callback) {
+    if($scope.permissions === undefined) {
+      getPermissions(callback);
+    } else {
+      callback();
+    }
+  };
+
   $scope.openPermissions = function() {
     $scope.showPermissions = true;
     getPermissions();

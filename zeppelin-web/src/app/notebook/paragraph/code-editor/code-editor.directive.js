@@ -24,6 +24,7 @@ function CodeEditorDirective($templateRequest, $compile) {
       originalText: '=originalText',
       onLoad: '=onLoad',
       revisionView: '=revisionView',
+      isOwner: '=isOwner',
     },
     link: function(scope, element, attrs, controller) {
       $templateRequest('app/notebook/paragraph/code-editor/code-editor.directive.html').then(function(editorHtml) {
